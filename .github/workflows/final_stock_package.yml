@@ -1,0 +1,168 @@
+name: Final Yahoo Alphabet Samsung raw package
+
+on:
+  pull_request:
+    branches:
+      - chatgpt/final-stock-package-base
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Build corrected final files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet --upgrade pandas requests
+          python - <<'PY'
+          from pathlib import Path
+          import io, json, zipfile
+          import pandas as pd
+          import requests
+
+          source_zip = Path('temp_stock_transfer/yahoo_alphabet_samsung_raw_complete.zip')
+          if not source_zip.exists():
+              raise FileNotFoundError(source_zip)
+
+          work = Path('source_unpacked')
+          out = Path('final_package')
+          work.mkdir(exist_ok=True)
+          out.mkdir(exist_ok=True)
+          with zipfile.ZipFile(source_zip) as z:
+              z.extractall(work)
+
+          candidates = list(work.rglob('*.csv'))
+          def find_part(part):
+              hits = [p for p in candidates if part in p.name]
+              if not hits:
+                  raise FileNotFoundError(part)
+              return hits[0]
+
+          cols = ['Date','Open','High','Low','Close','Adj Close','Volume']
+
+          def normalize(df, adj_default=True):
+              df = df.copy()
+              df.columns = [str(c).strip() for c in df.columns]
+              aliases = {}
+              for c in df.columns:
+                  k = str(c).strip().lower().replace('_',' ').replace('.','')
+                  aliases[c] = {
+                      'date':'Date','<date>':'Date','report date':'Date',
+                      'open':'Open','<open>':'Open','high':'High','<high>':'High',
+                      'low':'Low','<low>':'Low','close':'Close','<close>':'Close',
+                      'adj close':'Adj Close','adjclose':'Adj Close',
+                      'volume':'Volume','<vol>':'Volume','vol':'Volume'
+                  }.get(k, c)
+              df = df.rename(columns=aliases)
+              if 'Date' not in df.columns:
+                  for c in df.columns:
+                      if 'date' in str(c).lower():
+                          df = df.rename(columns={c:'Date'})
+                          break
+              if 'Adj Close' not in df.columns:
+                  df['Adj Close'] = df['Close'] if adj_default else pd.NA
+              missing = [c for c in ['Date','Open','High','Low','Close','Volume'] if c not in df.columns]
+              if missing:
+                  raise ValueError(f'missing {missing}; columns={list(df.columns)}')
+              df['Date'] = pd.to_datetime(df['Date'].astype(str), errors='coerce', utc=True).dt.tz_convert(None).dt.normalize()
+              for c in cols[1:]:
+                  if c not in df.columns:
+                      df[c] = pd.NA
+                  df[c] = pd.to_numeric(df[c], errors='coerce')
+              df = df.dropna(subset=['Date','Open','High','Low','Close','Volume'])
+              df['Adj Close'] = df['Adj Close'].fillna(df['Close'])
+              df = df[cols].sort_values('Date').drop_duplicates('Date', keep='last').reset_index(drop=True)
+              df['Volume'] = df['Volume'].round().astype('int64')
+              return df
+
+          googl = normalize(pd.read_csv(find_part('alphabet_googl')))
+          goog = normalize(pd.read_csv(find_part('alphabet_goog_raw')))
+          samsung = normalize(pd.read_csv(find_part('samsung_electronics')))
+          googl = googl[googl.Date <= pd.Timestamp('2026-07-21')].reset_index(drop=True)
+          goog = goog[goog.Date <= pd.Timestamp('2026-07-21')].reset_index(drop=True)
+          samsung = samsung[samsung.Date <= pd.Timestamp('2026-07-22')].reset_index(drop=True)
+
+          # Recover complete pre-ticker-change Yahoo history from the Stooq-based AABA archive.
+          archive_url = 'https://www.kaggle.com/api/v1/datasets/download/borismarjanovic/price-volume-data-for-all-us-stocks-etfs'
+          bulk = Path('stock_bulk.zip')
+          with requests.get(archive_url, stream=True, timeout=900, headers={'User-Agent':'Mozilla/5.0'}) as r:
+              r.raise_for_status()
+              with bulk.open('wb') as f:
+                  for chunk in r.iter_content(1024 * 1024):
+                      if chunk:
+                          f.write(chunk)
+          with zipfile.ZipFile(bulk) as z:
+              names = [n for n in z.namelist() if n.lower().endswith('/aaba.us.txt') or n.lower() == 'aaba.us.txt']
+              if not names:
+                  names = [n for n in z.namelist() if 'aaba' in n.lower()]
+              if not names:
+                  raise RuntimeError('AABA archive member not found')
+              yhoo = normalize(pd.read_csv(z.open(names[0])))
+          yhoo = yhoo[(yhoo.Date >= pd.Timestamp('1996-04-12')) & (yhoo.Date <= pd.Timestamp('2017-06-16'))].reset_index(drop=True)
+          if len(yhoo) != 5331 or yhoo.Date.iloc[0] != pd.Timestamp('1996-04-12') or yhoo.Date.iloc[-1] != pd.Timestamp('2017-06-16'):
+              raise RuntimeError(f'Unexpected YHOO coverage: rows={len(yhoo)}, range={yhoo.Date.min()}..{yhoo.Date.max()}')
+
+          files = {
+              'GOOGL': (googl, out/'alphabet_googl_raw_2004-08-19_to_2026-07-21.csv'),
+              'GOOG': (goog, out/'alphabet_goog_raw_2004-08-19_to_2026-07-21.csv'),
+              '005930.KS': (samsung, out/'samsung_electronics_005930_raw_2000-01-04_to_2026-07-22.csv'),
+              'YHOO': (yhoo, out/'yahoo_inc_yhoo_raw_1996-04-12_to_2017-06-16.csv'),
+          }
+          report = {
+              'columns': cols,
+              'policy': 'No interpolation, forward fill, or price/volume rescaling. Source anomalies are preserved and disclosed.',
+              'files': {},
+              'notes': [
+                  'GOOGL and GOOG are separate Alphabet share classes.',
+                  'Alphabet files end at the last fully completed US session, 2026-07-21.',
+                  'YHOO uses only AABA archive rows dated through 2017-06-16, before the ticker change; later AABA dates are excluded.',
+                  'Samsung source anomaly rows are preserved and listed.'
+              ]
+          }
+          for symbol, (df, path) in files.items():
+              bad = ((df.High < df[['Open','Close','Low']].max(axis=1)) |
+                     (df.Low > df[['Open','Close','High']].min(axis=1)))
+              examples = df.loc[bad, cols].copy()
+              if len(examples):
+                  examples['Date'] = examples['Date'].dt.strftime('%Y-%m-%d')
+              report['files'][symbol] = {
+                  'rows': int(len(df)),
+                  'first_date': df.Date.min().date().isoformat(),
+                  'last_date': df.Date.max().date().isoformat(),
+                  'duplicate_dates': int(df.Date.duplicated().sum()),
+                  'missing_values': {c:int(df[c].isna().sum()) for c in cols},
+                  'ohlc_logic_errors': int(bad.sum()),
+                  'ohlc_logic_error_rows': examples.to_dict(orient='records'),
+                  'zero_volume_rows': int((df.Volume == 0).sum())
+              }
+              saved = df.copy()
+              saved['Date'] = saved['Date'].dt.strftime('%Y-%m-%d')
+              saved.to_csv(path, index=False, encoding='utf-8-sig')
+
+          (out/'stock_raw_quality_report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+          (out/'README_KO.txt').write_text(
+              'RAW 열: Date, Open, High, Low, Close, Adj Close, Volume\n'
+              'GOOGL=알파벳 A주, GOOG=알파벳 C주, 005930.KS=삼성전자, YHOO=구 야후\n'
+              '가격·거래량 보간과 단위 변경 없음. YHOO는 AABA 변경 이후 거래를 포함하지 않음.\n',
+              encoding='utf-8')
+          with zipfile.ZipFile('yahoo_alphabet_samsung_raw_complete_final.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+              for p in sorted(out.iterdir()):
+                  z.write(p, p.name)
+          print(json.dumps(report, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload corrected final package
+        uses: actions/upload-artifact@v4
+        with:
+          name: yahoo-alphabet-samsung-raw-corrected-final
+          path: yahoo_alphabet_samsung_raw_complete_final.zip
+          compression-level: 0
+          retention-days: 1
