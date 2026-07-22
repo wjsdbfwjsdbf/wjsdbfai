@@ -1,0 +1,33 @@
+name: Temporary stock ZIP transfer
+
+on:
+  pull_request:
+    branches:
+      - chatgpt/temp-stock-transfer-base
+
+permissions:
+  contents: write
+
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Download and verify ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p temp_stock_transfer
+          curl -L --fail --retry 3 --max-time 180 \
+            https://temp.sh/aLJEB/yahoo_alphabet_samsung_raw_complete.zip \
+            -o temp_stock_transfer/yahoo_alphabet_samsung_raw_complete.zip
+          echo 'b35d60164a092059ea6226f659a791777ffa85fa4c70391107fa547d2a578e68  temp_stock_transfer/yahoo_alphabet_samsung_raw_complete.zip' | sha256sum -c -
+          git config user.name 'temporary-export'
+          git config user.email 'temporary-export@users.noreply.github.com'
+          git add temp_stock_transfer/yahoo_alphabet_samsung_raw_complete.zip
+          git commit -m 'Temporary stock ZIP transfer'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
