@@ -1,0 +1,54 @@
+name: Temporary stock CJK14 chunk export
+
+on:
+  pull_request:
+    branches:
+      - chatgpt/temp-stock-transfer-base
+
+permissions:
+  contents: write
+
+jobs:
+  cjk14:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Encode tar.xz as 14-bit CJK symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP=temp_stock_transfer/yahoo_alphabet_samsung_raw_complete.zip
+          rm -rf /tmp/stock_cjk temp_stock_cjk14_chunks
+          mkdir -p /tmp/stock_cjk temp_stock_cjk14_chunks
+          unzip -q "$ZIP" -d /tmp/stock_cjk
+          tar -C /tmp/stock_cjk -cJf /tmp/stock.tar.xz .
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+          data=Path('/tmp/stock.tar.xz').read_bytes()
+          buf=0; nbits=0; chars=[]
+          for b in data:
+              buf=(buf<<8)|b; nbits+=8
+              while nbits>=14:
+                  nbits-=14
+                  chars.append(chr(0x4E00+((buf>>nbits)&0x3FFF)))
+                  buf &= (1<<nbits)-1 if nbits else 0
+          if nbits:
+              chars.append(chr(0x4E00+((buf<<(14-nbits))&0x3FFF)))
+          text=''.join(chars)
+          out=Path('temp_stock_cjk14_chunks')
+          size=2500
+          for i in range(0,len(text),size):
+              (out/f'chunk_{i//size:03d}.txt').write_text(text[i:i+size],encoding='utf-8')
+          manifest={'encoding':'cjk14-base-0x4E00','original_bytes':len(data),'symbol_count':len(text),'chunk_chars':size,'chunk_count':(len(text)+size-1)//size,'sha256':hashlib.sha256(data).hexdigest()}
+          (out/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False),encoding='utf-8')
+          print(manifest)
+          PY
+          git config user.name 'temporary-export'
+          git config user.email 'temporary-export@users.noreply.github.com'
+          git add temp_stock_cjk14_chunks
+          git commit -m 'Temporary stock CJK14 chunks'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
