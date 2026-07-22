@@ -1,0 +1,29 @@
+name: Temporary public stock artifact upload
+
+on:
+  pull_request:
+    branches:
+      - chatgpt/temp-stock-transfer-base
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+      - name: Verify ZIP
+        shell: bash
+        run: |
+          test -f temp_stock_transfer/yahoo_alphabet_samsung_raw_complete.zip
+          echo '7992de73eef3e9ef63ae9fd6ca0ee3cc3a2df900a1da1a4b78012fd2fb057ee8  temp_stock_transfer/yahoo_alphabet_samsung_raw_complete.zip' | sha256sum -c -
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yahoo-alphabet-samsung-raw-direct
+          path: temp_stock_transfer/yahoo_alphabet_samsung_raw_complete.zip
+          compression-level: 0
+          retention-days: 1
