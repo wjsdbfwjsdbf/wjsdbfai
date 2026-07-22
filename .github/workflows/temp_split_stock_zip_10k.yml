@@ -1,0 +1,38 @@
+name: Temporary stock ZIP 10K chunk export
+
+on:
+  pull_request:
+    branches:
+      - chatgpt/temp-stock-transfer-base
+
+permissions:
+  contents: write
+
+jobs:
+  split10k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Split ZIP into 10K Base64 text chunks
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP=temp_stock_transfer/yahoo_alphabet_samsung_raw_complete.zip
+          test -f "$ZIP"
+          rm -rf temp_stock_chunks_10k
+          mkdir -p temp_stock_chunks_10k
+          base64 -w0 "$ZIP" > /tmp/stock.zip.b64
+          split -b 10000 -d -a 3 --additional-suffix=.txt /tmp/stock.zip.b64 temp_stock_chunks_10k/chunk_
+          SHA=$(sha256sum "$ZIP" | awk '{print $1}')
+          ZBYTES=$(stat -c%s "$ZIP")
+          BBYTES=$(stat -c%s /tmp/stock.zip.b64)
+          COUNT=$(find temp_stock_chunks_10k -name 'chunk_*.txt' | wc -l)
+          printf '{"zip_bytes":%s,"base64_bytes":%s,"chunk_size":10000,"chunk_count":%s,"sha256":"%s"}\n' "$ZBYTES" "$BBYTES" "$COUNT" "$SHA" > temp_stock_chunks_10k/manifest.json
+          git config user.name 'temporary-export'
+          git config user.email 'temporary-export@users.noreply.github.com'
+          git add temp_stock_chunks_10k
+          git commit -m 'Temporary stock ZIP 10K Base64 chunks'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
