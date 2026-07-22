@@ -1,0 +1,52 @@
+name: Temporary stock maximum compression export
+
+on:
+  pull_request:
+    branches:
+      - chatgpt/temp-stock-transfer-base
+
+permissions:
+  contents: write
+
+jobs:
+  maxcompress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Compress with Brotli and 7z PPMd
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq brotli p7zip-full >/dev/null
+          ZIP=temp_stock_transfer/yahoo_alphabet_samsung_raw_complete.zip
+          rm -rf /tmp/stock_mc temp_stock_maxcompress
+          mkdir -p /tmp/stock_mc temp_stock_maxcompress
+          unzip -q "$ZIP" -d /tmp/stock_mc
+          tar -C /tmp/stock_mc -cf /tmp/stock.tar .
+          brotli -f -q 11 -w 24 /tmp/stock.tar -o /tmp/stock.tar.br
+          7z a -t7z -m0=PPMd -mx=9 -ms=on /tmp/stock_ppmd.7z /tmp/stock_mc/* >/dev/null
+          BR=$(stat -c%s /tmp/stock.tar.br)
+          PPMD=$(stat -c%s /tmp/stock_ppmd.7z)
+          if [ "$BR" -le "$PPMD" ]; then
+            SRC=/tmp/stock.tar.br
+            KIND=tar.br
+          else
+            SRC=/tmp/stock_ppmd.7z
+            KIND=7z-ppmd
+          fi
+          base64 -w0 "$SRC" > /tmp/stock.mc.b64
+          split -b 3000 -d -a 3 --additional-suffix=.txt /tmp/stock.mc.b64 temp_stock_maxcompress/chunk_
+          SHA=$(sha256sum "$SRC" | awk '{print $1}')
+          BYTES=$(stat -c%s "$SRC")
+          BBYTES=$(stat -c%s /tmp/stock.mc.b64)
+          COUNT=$(find temp_stock_maxcompress -name 'chunk_*.txt' | wc -l)
+          printf '{"kind":"%s","selected_bytes":%s,"brotli_bytes":%s,"ppmd_bytes":%s,"base64_bytes":%s,"chunk_size":3000,"chunk_count":%s,"sha256":"%s"}\n' "$KIND" "$BYTES" "$BR" "$PPMD" "$BBYTES" "$COUNT" "$SHA" > temp_stock_maxcompress/manifest.json
+          git config user.name 'temporary-export'
+          git config user.email 'temporary-export@users.noreply.github.com'
+          git add temp_stock_maxcompress
+          git commit -m 'Temporary maximum-compressed stock chunks'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
