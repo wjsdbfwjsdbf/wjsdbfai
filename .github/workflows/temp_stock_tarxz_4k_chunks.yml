@@ -1,0 +1,39 @@
+name: Temporary stock tar.xz 4K chunks
+
+on:
+  pull_request:
+    branches:
+      - chatgpt/temp-stock-transfer-base
+
+permissions:
+  contents: write
+
+jobs:
+  split4k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Build tar.xz and split Base64 into 4K chunks
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP=temp_stock_transfer/yahoo_alphabet_samsung_raw_complete.zip
+          rm -rf /tmp/stock_4k temp_stock_tarxz_4k_chunks
+          mkdir -p /tmp/stock_4k temp_stock_tarxz_4k_chunks
+          unzip -q "$ZIP" -d /tmp/stock_4k
+          tar -C /tmp/stock_4k -cJf /tmp/stock.tar.xz .
+          base64 -w0 /tmp/stock.tar.xz > /tmp/stock.b64
+          split -b 4000 -d -a 3 --additional-suffix=.txt /tmp/stock.b64 temp_stock_tarxz_4k_chunks/chunk_
+          SHA=$(sha256sum /tmp/stock.tar.xz | awk '{print $1}')
+          BYTES=$(stat -c%s /tmp/stock.tar.xz)
+          BBYTES=$(stat -c%s /tmp/stock.b64)
+          COUNT=$(find temp_stock_tarxz_4k_chunks -name 'chunk_*.txt' | wc -l)
+          printf '{"original_bytes":%s,"base64_bytes":%s,"chunk_size":4000,"chunk_count":%s,"sha256":"%s"}\n' "$BYTES" "$BBYTES" "$COUNT" "$SHA" > temp_stock_tarxz_4k_chunks/manifest.json
+          git config user.name 'temporary-export'
+          git config user.email 'temporary-export@users.noreply.github.com'
+          git add temp_stock_tarxz_4k_chunks
+          git commit -m 'Temporary stock tar.xz 4K chunks'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
