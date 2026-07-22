@@ -1,0 +1,40 @@
+name: Temporary stock tar.xz chunk export
+
+on:
+  pull_request:
+    branches:
+      - chatgpt/temp-stock-transfer-base
+
+permissions:
+  contents: write
+
+jobs:
+  tarxz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Recompress stock package and split into 3K chunks
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP=temp_stock_transfer/yahoo_alphabet_samsung_raw_complete.zip
+          test -f "$ZIP"
+          rm -rf /tmp/stock_extract temp_stock_tarxz_chunks
+          mkdir -p /tmp/stock_extract temp_stock_tarxz_chunks
+          unzip -q "$ZIP" -d /tmp/stock_extract
+          tar -C /tmp/stock_extract -cJf /tmp/yahoo_alphabet_samsung_raw_complete.tar.xz .
+          base64 -w0 /tmp/yahoo_alphabet_samsung_raw_complete.tar.xz > /tmp/stock.tar.xz.b64
+          split -b 3000 -d -a 3 --additional-suffix=.txt /tmp/stock.tar.xz.b64 temp_stock_tarxz_chunks/chunk_
+          SHA=$(sha256sum /tmp/yahoo_alphabet_samsung_raw_complete.tar.xz | awk '{print $1}')
+          TBYTES=$(stat -c%s /tmp/yahoo_alphabet_samsung_raw_complete.tar.xz)
+          BBYTES=$(stat -c%s /tmp/stock.tar.xz.b64)
+          COUNT=$(find temp_stock_tarxz_chunks -name 'chunk_*.txt' | wc -l)
+          printf '{"tar_xz_bytes":%s,"base64_bytes":%s,"chunk_size":3000,"chunk_count":%s,"sha256":"%s"}\n' "$TBYTES" "$BBYTES" "$COUNT" "$SHA" > temp_stock_tarxz_chunks/manifest.json
+          git config user.name 'temporary-export'
+          git config user.email 'temporary-export@users.noreply.github.com'
+          git add temp_stock_tarxz_chunks
+          git commit -m 'Temporary stock tar.xz Base64 chunks'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
